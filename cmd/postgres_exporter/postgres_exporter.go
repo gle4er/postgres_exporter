@@ -37,6 +37,7 @@ var (
 	metricPath            = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").OverrideDefaultFromEnvar("PG_EXPORTER_WEB_TELEMETRY_PATH").String()
 	disableDefaultMetrics = kingpin.Flag("disable-default-metrics", "Do not include default metrics.").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_DISABLE_DEFAULT_METRICS").Bool()
 	disableSettingMetrics = kingpin.Flag("disable-setting-metrics", "Do not include setting metrics.").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_DISABLE_SETTING_METRICS").Bool()
+    autodiscovery         = kingpin.Flag("autodiscovery", "Autodiscovering databases in listed URL's").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_AUTODISCOVERING").Bool()
 	queriesPath           = kingpin.Flag("extend.query-path", "Path to custom queries to run.").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_EXTEND_QUERY_PATH").String()
 	onlyDumpMaps          = kingpin.Flag("dumpmaps", "Do not run, simply dump the maps.").Bool()
 	constantLabelsList    = kingpin.Flag("constantLabels", "A list of label=value separated by comma(,).").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_CONTANT_LABELS").String()
@@ -1167,6 +1168,37 @@ func getDataSource() []string {
 	return dsn
 }
 
+// Discovery all available DB
+func discoveryDB(conn string) []string {
+    db, err := sql.Open("postgres", conn)
+    if err != nil {
+        panic("hehmda")
+    }
+    rows, err := db.Query("SELECT datname FROM pg_database WHERE datistemplate = false;")
+    if err != nil {
+        panic("hehmda")
+    }
+    var dbList []string
+    for rows.Next() {
+        var ses string
+        rows.Scan(&ses)
+        dbList = append(dbList, ses)
+    }
+    db.Close()
+    rows.Close()
+    return dbList
+}
+
+func registerExporter(dsn string, disableDefaultMetrics, disableSettingMetrics bool, userQueriesPath string, constLabels prometheus.Labels) {
+    exporter := NewExporter(dsn, disableDefaultMetrics, disableSettingMetrics, userQueriesPath, constLabels)
+    defer func() {
+        if exporter.dbConnection != nil {
+            exporter.dbConnection.Close() // nolint: errcheck
+        }
+    }()
+    prometheus.MustRegister(exporter)
+}
+
 func main() {
 	kingpin.Version(fmt.Sprintf("postgres_exporter %s (built with %s)\n", Version, runtime.Version()))
 	log.AddFlags(kingpin.CommandLine)
@@ -1214,14 +1246,26 @@ func main() {
 		}
 		convertedConstLabels := newConstLabels(constExporterLabels)
 
-		exporter := NewExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-		defer func() {
-			if exporter.dbConnection != nil {
-				exporter.dbConnection.Close() // nolint: errcheck
-			}
-		}()
+        if *autodiscovery {
+            index := strings.LastIndex(currDsn, "/") + 1
+            allDB := discoveryDB(currDsn)
+            for j, currDB := range allDB {
+                if j > 0 {
+                    currDsnDisableDefaultMetrics = true
+                    currDsnDisableSettingMetrics = true
+                }
+                constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",subexporter=%d", j)
+                if len(*constantLabelsList) > 0 {
+                    constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
+                }
+                convertedConstLabels := newConstLabels(constExporterLabelsForDB)
+                dsnWithDB := currDsn[:index] + currDB + currDsn[index:]
+                registerExporter(dsnWithDB, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+            }
+        } else {
+            registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+        }
 
-		prometheus.MustRegister(exporter)
 
 		// This is for removing same default metrics
 	}
