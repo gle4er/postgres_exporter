@@ -1032,8 +1032,8 @@ func (e *Exporter) getDB(conn string) (*sql.DB, error) {
 		d.SetMaxOpenConns(1)
 		d.SetMaxIdleConns(1)
 		e.dbConnection = d
-		e.dbDsn = e.dsn
-		log.Infoln("Established new database connection.")
+        e.dbDsn = e.dsn
+        log.Infoln("Established new database connection.")
 	}
 
 	// Always send a ping and possibly invalidate the connection if it fails
@@ -1179,24 +1179,78 @@ func discoveryDB(conn string) []string {
         panic("hehmda")
     }
     var dbList []string
+    pasteIndex := strings.LastIndex(conn, "/") + 1
     for rows.Next() {
-        var ses string
-        rows.Scan(&ses)
-        dbList = append(dbList, ses)
+        var db string
+        rows.Scan(&db)
+        db = conn[:pasteIndex] + db + conn[pasteIndex:]
+        dbList = append(dbList, db)
     }
     db.Close()
     rows.Close()
     return dbList
 }
 
-func registerExporter(dsn string, disableDefaultMetrics, disableSettingMetrics bool, userQueriesPath string, constLabels prometheus.Labels) {
-    exporter := NewExporter(dsn, disableDefaultMetrics, disableSettingMetrics, userQueriesPath, constLabels)
+func autodiscoverDB(dsn, constExporterLabels string) {
+    var allExporters []Exporter
     defer func() {
-        if exporter.dbConnection != nil {
-            exporter.dbConnection.Close() // nolint: errcheck
+        for _, exporter := range allExporters {
+            if exporter.dbConnection != nil {
+                exporter.dbConnection.Close() // nolint: errcheck
+            }
         }
     }()
+    subExporterSeed := 0
+    for (true) {
+        allDB := discoveryDB(dsn)
+        for i, subExporter := range allExporters {
+            isScrapping := false
+            for _, db := range allDB {
+                if subExporter.dsn == db {
+                    isScrapping = true
+                    break
+                }
+            }
+            if !isScrapping {
+                subExporter.getDB(subExporter.dsn)
+                prometheus.Unregister(&subExporter)
+                j := 1 + i
+                allExporters = append(allExporters[:i], allExporters[j:]...)
+            }
+        }
+        for _, currDB := range allDB {
+            needRegister := true
+            for _, subExporter := range allExporters {
+                if subExporter.dsn == currDB {
+                    needRegister = false
+                }
+            }
+            if needRegister {
+                currDsnDisableDefaultMetrics := *disableDefaultMetrics
+                currDsnDisableSettingMetrics := *disableSettingMetrics
+                if strings.LastIndex(currDB, "/postgres?") == -1 {
+                    currDsnDisableDefaultMetrics = true
+                    currDsnDisableSettingMetrics = true
+                }
+                constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",subexporter=%d", subExporterSeed)
+                subExporterSeed += 1
+                if len(*constantLabelsList) > 0 {
+                    constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
+                }
+                convertedConstLabels := newConstLabels(constExporterLabelsForDB)
+                exporter := NewExporter(currDB, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+                prometheus.MustRegister(exporter)
+                allExporters = append(allExporters, *exporter)
+            }
+        }
+        time.Sleep(60 * time.Second)
+    }
+}
+
+func registerExporter(dsn string, disableDefaultMetrics, disableSettingMetrics bool, userQueriesPath string, constLabels prometheus.Labels) *Exporter {
+    exporter := NewExporter(dsn, disableDefaultMetrics, disableSettingMetrics, userQueriesPath, constLabels)
     prometheus.MustRegister(exporter)
+    return exporter
 }
 
 func main() {
@@ -1247,21 +1301,7 @@ func main() {
 		convertedConstLabels := newConstLabels(constExporterLabels)
 
         if *autodiscovery {
-            index := strings.LastIndex(currDsn, "/") + 1
-            allDB := discoveryDB(currDsn)
-            for j, currDB := range allDB {
-                if j > 0 {
-                    currDsnDisableDefaultMetrics = true
-                    currDsnDisableSettingMetrics = true
-                }
-                constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",subexporter=%d", j)
-                if len(*constantLabelsList) > 0 {
-                    constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
-                }
-                convertedConstLabels := newConstLabels(constExporterLabelsForDB)
-                dsnWithDB := currDsn[:index] + currDB + currDsn[index:]
-                registerExporter(dsnWithDB, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-            }
+            go autodiscoverDB(currDsn, constExporterLabels)
         } else {
             registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
         }
