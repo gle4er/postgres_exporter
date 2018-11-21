@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
+    "github.com/drael/GOnetstat"
 )
 
 // Version is set during build to the git describe version
@@ -1125,10 +1126,12 @@ func getDataSource() []string {
 
 		if len(os.Getenv("DATA_SOURCE_USER_FILE")) != 0 {
 			user = getDataFromEnv("DATA_SOURCE_USER_FILE")
-		} else {
+		} else if len(os.Getenv("DATA_SOURCE_USER")) != 0 {
 			tmp := os.Getenv("DATA_SOURCE_USER")
 			user = strings.Split(tmp, ",")
-		}
+		} else {
+            user = append(user, "postgres")
+        }
 
 		if len(os.Getenv("DATA_SOURCE_PASS_FILE")) != 0 {
 			pass = getDataFromEnv("DATA_SOURCE_PASS_FILE")
@@ -1143,8 +1146,22 @@ func getDataSource() []string {
 			panic("Not enough passwords")
 		}
 
-		tmp := os.Getenv("DATA_SOURCE_URI")
-		uris := strings.Split(tmp, ",")
+        var uris []string
+        if *autodiscovery {
+            tcp_conns := GOnetstat.Tcp()
+            for _, tcp := range tcp_conns {
+                if tcp.User == "postgres" {
+                    procName := strings.ToLower(tcp.Name)
+                    if procName == "postgres" || procName == "postmaster" {
+                        uri := fmt.Sprintf("%s:%d", "localhost", tcp.Port)
+                        uris = append(uris, uri)
+                    }
+                }
+            }
+        } else {
+            tmp := os.Getenv("DATA_SOURCE_URI")
+            uris = strings.Split(tmp, ",")
+        }
 
 		if len(uris) < len(user) || len(uris) < len(pass) {
 			panic("Not enough uri's")
@@ -1160,7 +1177,7 @@ func getDataSource() []string {
 				currPass = pass[i]
 			}
 			ui := url.UserPassword(currUser, currPass).String()
-			dsn = append(dsn, "postgresql://"+ui+"@"+uri)
+			dsn = append(dsn, "postgresql://"+ui+"@"+uri+"/?sslmode=disable")
 		}
 		return dsn
 	}
@@ -1172,11 +1189,11 @@ func getDataSource() []string {
 func discoveryDB(conn string) []string {
     db, err := sql.Open("postgres", conn)
     if err != nil {
-        panic("hehmda")
+        panic(err)
     }
     rows, err := db.Query("SELECT datname FROM pg_database WHERE datistemplate = false;")
     if err != nil {
-        panic("hehmda")
+        panic(err)
     }
     var dbList []string
     pasteIndex := strings.LastIndex(conn, "/") + 1
@@ -1191,6 +1208,7 @@ func discoveryDB(conn string) []string {
     return dbList
 }
 
+// Explore all available DB in postgres and add exporters
 func autodiscoverDB(dsn, constExporterLabels string) {
     var allExporters []Exporter
     defer func() {
@@ -1253,6 +1271,63 @@ func registerExporter(dsn string, disableDefaultMetrics, disableSettingMetrics b
     return exporter
 }
 
+func createExporters(dsn []string, exporterSeed ...int) {
+    if len(dsn) == 0 {
+        log.Fatal("couldn't find environment variables describing the datasource to use")
+    }
+
+    seed := 0
+    if len(exporterSeed) == 1 {
+        seed = exporterSeed[0]
+    }
+
+    portMap := make(map[string]bool)
+    portFind, _ := regexp.Compile(":[0-9]+/")
+    for i, currDsn := range dsn {
+        // This is for avoid duplicating metrics
+        currDsnDisableDefaultMetrics := *disableDefaultMetrics
+        currDsnDisableSettingMetrics := *disableSettingMetrics
+
+        currPort := portFind.FindString(currDsn)
+        if !portMap[currPort] {
+            portMap[currPort] = true
+        } else {
+            currDsnDisableDefaultMetrics = true
+            currDsnDisableSettingMetrics = true
+        }
+        // This is need for differing exporters
+        constExporterLabels := fmt.Sprintf("exporter=%d", i + seed)
+        if len(*constantLabelsList) > 0 {
+            constExporterLabels = *constantLabelsList + "," + constExporterLabels
+        }
+        convertedConstLabels := newConstLabels(constExporterLabels)
+        if *autodiscovery {
+            go autodiscoverDB(currDsn, constExporterLabels)
+        } else {
+            registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+        }
+    }
+}
+
+func autoCreateExporters() {
+    dsnList := make(map[string]bool)
+    for true {
+        dsn := getDataSource()
+        seed := len(dsnList)
+        var dsnToAdd []string
+        for _, currDsn := range dsn {
+            if !dsnList[currDsn] {
+                dsnToAdd = append(dsnToAdd, currDsn)
+                dsnList[currDsn] = true
+            }
+        }
+        if len(dsnToAdd) > 0 {
+            createExporters(dsnToAdd, seed)
+        }
+        time.Sleep(60 * time.Second)
+    }
+}
+
 func main() {
 	kingpin.Version(fmt.Sprintf("postgres_exporter %s (built with %s)\n", Version, runtime.Version()))
 	log.AddFlags(kingpin.CommandLine)
@@ -1274,41 +1349,12 @@ func main() {
 		return
 	}
 
-	dsn := getDataSource()
-	if len(dsn) == 0 {
-		log.Fatal("couldn't find environment variables describing the datasource to use")
-	}
-
-	var prevPort string
-	portFind, _ := regexp.Compile(":[0-9]+/")
-	for i, currDsn := range dsn {
-		// This is for avoid duplicating metrics
-		currDsnDisableDefaultMetrics := *disableDefaultMetrics
-		currDsnDisableSettingMetrics := *disableSettingMetrics
-
-		currPort := portFind.FindString(currDsn)
-		if currPort != prevPort {
-			prevPort = currPort
-		} else {
-			currDsnDisableDefaultMetrics = true
-			currDsnDisableSettingMetrics = true
-		}
-		// This is need for differing exporters
-		constExporterLabels := fmt.Sprintf("exporter=%d", i)
-		if len(*constantLabelsList) > 0 {
-			constExporterLabels = *constantLabelsList + "," + constExporterLabels
-		}
-		convertedConstLabels := newConstLabels(constExporterLabels)
-
-        if *autodiscovery {
-            go autodiscoverDB(currDsn, constExporterLabels)
-        } else {
-            registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-        }
-
-
-		// This is for removing same default metrics
-	}
+    if *autodiscovery {
+        go autoCreateExporters()
+    } else {
+        dsn := getDataSource()
+        createExporters(dsn)
+    }
 
 	http.Handle(*metricPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

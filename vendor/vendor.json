@@ -39,6 +39,12 @@
 			"revisionTime": "2017-07-27T06:48:18Z"
 		},
 		{
+			"checksumSHA1": "qS0Hhgycztyoj4E9VQOUT0Fogzg=",
+			"path": "github.com/drael/GOnetstat",
+			"revision": "5749d3c4260d4b819df09cb703cc82062fc085cd",
+			"revisionTime": "2018-07-22T22:19:34Z"
+		},
+		{
 			"checksumSHA1": "92dnVWesQCC1xueK1Du/6c+yLOk=",
 			"path": "github.com/dsnet/compress",
 			"revision": "cc9eb1d7ad760af14e8f918698f745e80377af4f",
@@ -321,5 +327,5 @@
 			"revisionTime": "2017-08-12T16:00:11Z"
 		}
 	],
-	"rootPath": "github.com/wrouesnel/postgres_exporter"
+	"rootPath": "github.com/gle4er/postgres_exporter"
 }
