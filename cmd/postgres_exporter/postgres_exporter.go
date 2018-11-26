@@ -1186,14 +1186,11 @@ func getDataSource() []string {
 }
 
 // Discovery all available DB
-func discoveryDB(conn string) map[string]string {
-    db, err := sql.Open("postgres", conn)
-    if err != nil {
-        panic(err)
-    }
+func discoveryDB(db *sql.DB, conn string) map[string]string {
     rows, err := db.Query("SELECT datname FROM pg_database WHERE datistemplate = false;")
     if err != nil {
-        panic(err)
+        log.Infof("Couldn't connect to postgres server: %s", err)
+        return nil
     }
     pasteIndex := strings.LastIndex(conn, "/") + 1
     dbList := make(map[string]string)
@@ -1203,7 +1200,6 @@ func discoveryDB(conn string) map[string]string {
         dsn := conn[:pasteIndex] + db + conn[pasteIndex:]
         dbList[db] = dsn
     }
-    db.Close()
     rows.Close()
     return dbList
 }
@@ -1211,15 +1207,21 @@ func discoveryDB(conn string) map[string]string {
 // Explore all available DB in postgres and add exporters
 func autodiscoverDB(dsn, constExporterLabels string) {
     var allExporters []Exporter
+    db, err := sql.Open("postgres", dsn)
+    if err != nil {
+        panic(err)
+    }
     defer func() {
         for _, exporter := range allExporters {
             if exporter.dbConnection != nil {
                 exporter.dbConnection.Close() // nolint: errcheck
             }
         }
+        db.Close()
     }()
     for (true) {
-        allDB := discoveryDB(dsn)
+        allDB := discoveryDB(db, dsn)
+        if allDB == nil { return }
         for i, subExporter := range allExporters {
             isScrapping := false
             for _, dsn := range allDB {
