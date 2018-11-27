@@ -22,11 +22,11 @@ import (
 	"crypto/sha256"
 
 	"github.com/blang/semver"
+	"github.com/drael/GOnetstat"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
-    "github.com/drael/GOnetstat"
 )
 
 // Version is set during build to the git describe version
@@ -38,7 +38,7 @@ var (
 	metricPath            = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").OverrideDefaultFromEnvar("PG_EXPORTER_WEB_TELEMETRY_PATH").String()
 	disableDefaultMetrics = kingpin.Flag("disable-default-metrics", "Do not include default metrics.").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_DISABLE_DEFAULT_METRICS").Bool()
 	disableSettingMetrics = kingpin.Flag("disable-setting-metrics", "Do not include setting metrics.").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_DISABLE_SETTING_METRICS").Bool()
-    autodiscovery         = kingpin.Flag("autodiscovery", "Autodiscovering databases in listed URL's").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_AUTODISCOVERING").Bool()
+	autodiscovery         = kingpin.Flag("autodiscovery", "Autodiscovering databases in listed URL's").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_AUTODISCOVERING").Bool()
 	queriesPath           = kingpin.Flag("extend.query-path", "Path to custom queries to run.").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_EXTEND_QUERY_PATH").String()
 	onlyDumpMaps          = kingpin.Flag("dumpmaps", "Do not run, simply dump the maps.").Bool()
 	constantLabelsList    = kingpin.Flag("constantLabels", "A list of label=value separated by comma(,).").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_CONTANT_LABELS").String()
@@ -1033,8 +1033,8 @@ func (e *Exporter) getDB(conn string) (*sql.DB, error) {
 		d.SetMaxOpenConns(1)
 		d.SetMaxIdleConns(1)
 		e.dbConnection = d
-        e.dbDsn = e.dsn
-        log.Infoln("Established new database connection.")
+		e.dbDsn = e.dsn
+		log.Infoln("Established new database connection.")
 	}
 
 	// Always send a ping and possibly invalidate the connection if it fails
@@ -1130,8 +1130,8 @@ func getDataSource() []string {
 			tmp := os.Getenv("DATA_SOURCE_USER")
 			user = strings.Split(tmp, ",")
 		} else {
-            user = append(user, "postgres")
-        }
+			user = append(user, "postgres")
+		}
 
 		if len(os.Getenv("DATA_SOURCE_PASS_FILE")) != 0 {
 			pass = getDataFromEnv("DATA_SOURCE_PASS_FILE")
@@ -1146,22 +1146,22 @@ func getDataSource() []string {
 			panic("Not enough passwords")
 		}
 
-        var uris []string
-        if *autodiscovery {
-            tcp_conns := GOnetstat.Tcp()
-            for _, tcp := range tcp_conns {
-                if tcp.User == "postgres" {
-                    procName := strings.ToLower(tcp.Name)
-                    if procName == "postgres" || procName == "postmaster" {
-                        uri := fmt.Sprintf("%s:%d", "localhost", tcp.Port)
-                        uris = append(uris, uri)
-                    }
-                }
-            }
-        } else {
-            tmp := os.Getenv("DATA_SOURCE_URI")
-            uris = strings.Split(tmp, ",")
-        }
+		var uris []string
+		if *autodiscovery {
+			tcpConns := GOnetstat.Tcp()
+			for _, tcp := range tcpConns {
+				if tcp.User == "postgres" {
+					procName := strings.ToLower(tcp.Name)
+					if procName == "postgres" || procName == "postmaster" {
+						uri := fmt.Sprintf("%s:%d", "localhost", tcp.Port)
+						uris = append(uris, uri)
+					}
+				}
+			}
+		} else {
+			tmp := os.Getenv("DATA_SOURCE_URI")
+			uris = strings.Split(tmp, ",")
+		}
 
 		if len(uris) < len(user) || len(uris) < len(pass) {
 			panic("Not enough uri's")
@@ -1187,145 +1187,156 @@ func getDataSource() []string {
 
 // Discovery all available DB
 func discoveryDB(db *sql.DB, conn string) map[string]string {
-    rows, err := db.Query("SELECT datname FROM pg_database WHERE datistemplate = false;")
-    if err != nil {
-        log.Infof("Couldn't connect to postgres server: %s", err)
-        return nil
-    }
-    pasteIndex := strings.LastIndex(conn, "/") + 1
-    dbList := make(map[string]string)
-    for rows.Next() {
-        var db string
-        rows.Scan(&db)
-        dsn := conn[:pasteIndex] + db + conn[pasteIndex:]
-        dbList[db] = dsn
-    }
-    rows.Close()
-    return dbList
+	rows, err := db.Query("SELECT datname FROM pg_database WHERE datistemplate = false;")
+	if err != nil {
+		log.Infof("Couldn't connect to postgres server: %s", err)
+		return nil
+	}
+	pasteIndex := strings.LastIndex(conn, "/") + 1
+	dbList := make(map[string]string)
+	for rows.Next() {
+		var db string
+		err := rows.Scan(&db)
+		if err != nil {
+			log.Infof("Couldn't exec query: %s", err)
+			return nil
+		}
+		dsn := conn[:pasteIndex] + db + conn[pasteIndex:]
+		dbList[db] = dsn
+	}
+	rerr := rows.Close()
+	if rerr != nil {
+		log.Infof("Close rows error: %s", rerr)
+	}
+	return dbList
 }
 
 // Explore all available DB in postgres and add exporters
 func autodiscoverDB(dsn, constExporterLabels string) {
-    var allExporters []Exporter
-    db, err := sql.Open("postgres", dsn)
-    if err != nil {
-        panic(err)
-    }
-    defer func() {
-        for _, exporter := range allExporters {
-            if exporter.dbConnection != nil {
-                exporter.dbConnection.Close() // nolint: errcheck
-            }
-        }
-        db.Close()
-    }()
-    for (true) {
-        allDB := discoveryDB(db, dsn)
-        if allDB == nil { return }
-        for i, subExporter := range allExporters {
-            isScrapping := false
-            for _, dsn := range allDB {
-                if subExporter.dsn == dsn {
-                    isScrapping = true
-                    break
-                }
-            }
-            if !isScrapping {
-                subExporter.getDB(subExporter.dsn)
-                prometheus.Unregister(&subExporter)
-                j := 1 + i
-                allExporters = append(allExporters[:i], allExporters[j:]...)
-            }
-        }
-        for currDB, currDsn := range allDB {
-            needRegister := true
-            for _, subExporter := range allExporters {
-                if subExporter.dsn == currDsn {
-                    needRegister = false
-                }
-            }
-            if needRegister {
-                currDsnDisableDefaultMetrics := *disableDefaultMetrics
-                currDsnDisableSettingMetrics := *disableSettingMetrics
-                if strings.LastIndex(currDsn, "/postgres?") == -1 {
-                    currDsnDisableDefaultMetrics = true
-                    currDsnDisableSettingMetrics = true
-                }
-                constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",dbname=%s", currDB)
-                if len(*constantLabelsList) > 0 {
-                    constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
-                }
-                convertedConstLabels := newConstLabels(constExporterLabelsForDB)
-                exporter := NewExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-                prometheus.MustRegister(exporter)
-                allExporters = append(allExporters, *exporter)
-            }
-        }
-        time.Sleep(60 * time.Second)
-    }
+	var allExporters []*Exporter
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		for _, exporter := range allExporters {
+			if exporter.dbConnection != nil {
+				exporter.dbConnection.Close() // nolint: errcheck
+			}
+		}
+		err := db.Close()
+		if err != nil {
+			log.Infof("Close db error: %s", err)
+		}
+	}()
+	for {
+		allDB := discoveryDB(db, dsn)
+		if allDB == nil {
+			return
+		}
+		for i, subExporter := range allExporters {
+			isScrapping := false
+			for _, dsn := range allDB {
+				if subExporter.dsn == dsn {
+					isScrapping = true
+					break
+				}
+			}
+			if !isScrapping {
+				prometheus.Unregister(subExporter)
+				j := 1 + i
+				allExporters = append(allExporters[:i], allExporters[j:]...)
+			}
+		}
+		for currDB, currDsn := range allDB {
+			needRegister := true
+			for _, subExporter := range allExporters {
+				if subExporter.dsn == currDsn {
+					needRegister = false
+				}
+			}
+			if needRegister {
+				currDsnDisableDefaultMetrics := *disableDefaultMetrics
+				currDsnDisableSettingMetrics := *disableSettingMetrics
+				if strings.LastIndex(currDsn, "/postgres?") == -1 {
+					currDsnDisableDefaultMetrics = true
+					currDsnDisableSettingMetrics = true
+				}
+				constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",dbname=%s", currDB)
+				if len(*constantLabelsList) > 0 {
+					constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
+				}
+				convertedConstLabels := newConstLabels(constExporterLabelsForDB)
+				exporter := NewExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+				prometheus.MustRegister(exporter)
+				allExporters = append(allExporters, exporter)
+			}
+		}
+		time.Sleep(60 * time.Second)
+	}
 }
 
 func registerExporter(dsn string, disableDefaultMetrics, disableSettingMetrics bool, userQueriesPath string, constLabels prometheus.Labels) *Exporter {
-    exporter := NewExporter(dsn, disableDefaultMetrics, disableSettingMetrics, userQueriesPath, constLabels)
-    prometheus.MustRegister(exporter)
-    return exporter
+	exporter := NewExporter(dsn, disableDefaultMetrics, disableSettingMetrics, userQueriesPath, constLabels)
+	prometheus.MustRegister(exporter)
+	return exporter
 }
 
 func createExporters(dsn []string, exporterSeed ...int) {
-    if len(dsn) == 0 {
-        log.Fatal("couldn't find environment variables describing the datasource to use")
-    }
+	if len(dsn) == 0 {
+		log.Fatal("couldn't find environment variables describing the datasource to use")
+	}
 
-    seed := 0
-    if len(exporterSeed) == 1 {
-        seed = exporterSeed[0]
-    }
+	seed := 0
+	if len(exporterSeed) == 1 {
+		seed = exporterSeed[0]
+	}
 
-    portMap := make(map[string]bool)
-    portFind, _ := regexp.Compile(":[0-9]+/")
-    for i, currDsn := range dsn {
-        // This is for avoid duplicating metrics
-        currDsnDisableDefaultMetrics := *disableDefaultMetrics
-        currDsnDisableSettingMetrics := *disableSettingMetrics
+	portMap := make(map[string]bool)
+	portFind, _ := regexp.Compile(":[0-9]+/")
+	for i, currDsn := range dsn {
+		// This is for avoid duplicating metrics
+		currDsnDisableDefaultMetrics := *disableDefaultMetrics
+		currDsnDisableSettingMetrics := *disableSettingMetrics
 
-        currPort := portFind.FindString(currDsn)
-        if !portMap[currPort] {
-            portMap[currPort] = true
-        } else {
-            currDsnDisableDefaultMetrics = true
-            currDsnDisableSettingMetrics = true
-        }
-        // This is need for differing exporters
-        constExporterLabels := fmt.Sprintf("exporter=%d", i + seed)
-        if len(*constantLabelsList) > 0 {
-            constExporterLabels = *constantLabelsList + "," + constExporterLabels
-        }
-        convertedConstLabels := newConstLabels(constExporterLabels)
-        if *autodiscovery {
-            go autodiscoverDB(currDsn, constExporterLabels)
-        } else {
-            registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-        }
-    }
+		currPort := portFind.FindString(currDsn)
+		if !portMap[currPort] {
+			portMap[currPort] = true
+		} else {
+			currDsnDisableDefaultMetrics = true
+			currDsnDisableSettingMetrics = true
+		}
+		// This is need for differing exporters
+		constExporterLabels := fmt.Sprintf("exporter=%d", i+seed)
+		if len(*constantLabelsList) > 0 {
+			constExporterLabels = *constantLabelsList + "," + constExporterLabels
+		}
+		convertedConstLabels := newConstLabels(constExporterLabels)
+		if *autodiscovery {
+			go autodiscoverDB(currDsn, constExporterLabels)
+		} else {
+			registerExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+		}
+	}
 }
 
 func autoCreateExporters() {
-    dsnList := make(map[string]bool)
-    for true {
-        dsn := getDataSource()
-        seed := len(dsnList)
-        var dsnToAdd []string
-        for _, currDsn := range dsn {
-            if !dsnList[currDsn] {
-                dsnToAdd = append(dsnToAdd, currDsn)
-                dsnList[currDsn] = true
-            }
-        }
-        if len(dsnToAdd) > 0 {
-            createExporters(dsnToAdd, seed)
-        }
-        time.Sleep(60 * time.Second)
-    }
+	dsnList := make(map[string]bool)
+	for {
+		dsn := getDataSource()
+		seed := len(dsnList)
+		var dsnToAdd []string
+		for _, currDsn := range dsn {
+			if !dsnList[currDsn] {
+				dsnToAdd = append(dsnToAdd, currDsn)
+				dsnList[currDsn] = true
+			}
+		}
+		if len(dsnToAdd) > 0 {
+			createExporters(dsnToAdd, seed)
+		}
+		time.Sleep(60 * time.Second)
+	}
 }
 
 func main() {
@@ -1349,12 +1360,12 @@ func main() {
 		return
 	}
 
-    if *autodiscovery {
-        go autoCreateExporters()
-    } else {
-        dsn := getDataSource()
-        createExporters(dsn)
-    }
+	if *autodiscovery {
+		go autoCreateExporters()
+	} else {
+		dsn := getDataSource()
+		createExporters(dsn)
+	}
 
 	http.Handle(*metricPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
