@@ -7,6 +7,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	. "gopkg.in/check.v1"
@@ -121,4 +122,23 @@ func (s *IntegrationSuite) TestUnknownMetricParsingDoesntCrash(c *C) {
 
 	// scrape the exporter and make sure it works
 	exporter.scrape(ch)
+}
+
+func (s *IntegrationSuite) TestDiscoveringDB(c *C) {
+	dsn := os.Getenv("DATA_SOURCE_NAME")
+	c.Assert(dsn, Not(Equals), "")
+
+	exporter := NewExporter(dsn, false, false, "", nil)
+	c.Assert(exporter, NotNil)
+
+	db, err := exporter.getDB(dsn)
+	c.Assert(db, NotNil)
+	c.Assert(err, IsNil)
+
+	pasteIndex := strings.LastIndex(dsn, "/") + 1
+	dsnCheck := dsn[:pasteIndex] + "postgres" + dsn[pasteIndex:]
+	dbList := discoveryDB(db, dsn)
+	c.Assert(dbList, NotNil)
+	c.Assert(len(dbList), Equals, 1)
+	c.Assert(dbList["postgres"], Equals, dsnCheck)
 }

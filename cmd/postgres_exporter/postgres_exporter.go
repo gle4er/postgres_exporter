@@ -1216,6 +1216,34 @@ func discoveryDB(db *sql.DB, conn string) map[string]string {
 	return dbList
 }
 
+func registerSubExporter(allDB map[string]string, allExporters []*Exporter, constExporterLabels string) []*Exporter {
+	for dbIndex, dsn := range allDB {
+		needRegister := true
+		for _, subExporter := range allExporters {
+			if subExporter.dsn == dsn {
+				needRegister = false
+			}
+		}
+		if needRegister {
+			currDsnDisableDefaultMetrics := *disableDefaultMetrics
+			currDsnDisableSettingMetrics := *disableSettingMetrics
+			if strings.LastIndex(dsn, "/postgres?") == -1 {
+				currDsnDisableDefaultMetrics = true
+				currDsnDisableSettingMetrics = true
+			}
+			constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",dbname=%s", dbIndex)
+			if len(*constantLabelsList) > 0 {
+				constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
+			}
+			convertedConstLabels := newConstLabels(constExporterLabelsForDB)
+			exporter := NewExporter(dsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
+			prometheus.MustRegister(exporter)
+			allExporters = append(allExporters, exporter)
+		}
+	}
+	return allExporters
+}
+
 // Explore all available DB in postgres and add exporters
 func autodiscoverDB(dsn, constExporterLabels string) {
 	var allExporters []*Exporter
@@ -1253,30 +1281,7 @@ func autodiscoverDB(dsn, constExporterLabels string) {
 				allExporters = append(allExporters[:i], allExporters[j:]...)
 			}
 		}
-		for currDB, currDsn := range allDB {
-			needRegister := true
-			for _, subExporter := range allExporters {
-				if subExporter.dsn == currDsn {
-					needRegister = false
-				}
-			}
-			if needRegister {
-				currDsnDisableDefaultMetrics := *disableDefaultMetrics
-				currDsnDisableSettingMetrics := *disableSettingMetrics
-				if strings.LastIndex(currDsn, "/postgres?") == -1 {
-					currDsnDisableDefaultMetrics = true
-					currDsnDisableSettingMetrics = true
-				}
-				constExporterLabelsForDB := constExporterLabels + fmt.Sprintf(",dbname=%s", currDB)
-				if len(*constantLabelsList) > 0 {
-					constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
-				}
-				convertedConstLabels := newConstLabels(constExporterLabelsForDB)
-				exporter := NewExporter(currDsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
-				prometheus.MustRegister(exporter)
-				allExporters = append(allExporters, exporter)
-			}
-		}
+		allExporters = registerSubExporter(allDB, allExporters, constExporterLabels)
 		time.Sleep(60 * time.Second)
 	}
 }
