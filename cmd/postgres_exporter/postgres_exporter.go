@@ -42,6 +42,7 @@ var (
 	queriesPath           = kingpin.Flag("extend.query-path", "Path to custom queries to run.").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_EXTEND_QUERY_PATH").String()
 	onlyDumpMaps          = kingpin.Flag("dumpmaps", "Do not run, simply dump the maps.").Bool()
 	constantLabelsList    = kingpin.Flag("constantLabels", "A list of label=value separated by comma(,).").Default("").OverrideDefaultFromEnvar("PG_EXPORTER_CONTANT_LABELS").String()
+	disableSSL            = kingpin.Flag("disableSSL", "Disable SSL").Default("false").OverrideDefaultFromEnvar("PG_EXPORTER_DISABLESSL").Bool()
 )
 
 // Metric name parts.
@@ -1177,7 +1178,11 @@ func getDataSource() []string {
 				currPass = pass[i]
 			}
 			ui := url.UserPassword(currUser, currPass).String()
-			dsn = append(dsn, "postgresql://"+ui+"@"+uri+"/?sslmode=disable")
+			newDsn := "postgresql://" + ui + "@" + uri
+			if *disableSSL {
+				newDsn += "/?sslmode=disable"
+			}
+			dsn = append(dsn, newDsn)
 		}
 		return dsn
 	}
