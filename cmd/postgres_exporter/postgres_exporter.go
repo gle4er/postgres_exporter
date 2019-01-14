@@ -1236,6 +1236,7 @@ func registerSubExporter(allDB map[string]string, allExporters []*Exporter, cons
 				constExporterLabelsForDB = *constantLabelsList + "," + constExporterLabelsForDB
 			}
 			convertedConstLabels := newConstLabels(constExporterLabelsForDB)
+            log.Debugln("Register subExporter: %s", dsn)
 			exporter := NewExporter(dsn, currDsnDisableDefaultMetrics, currDsnDisableSettingMetrics, *queriesPath, convertedConstLabels)
 			prometheus.MustRegister(exporter)
 			allExporters = append(allExporters, exporter)
@@ -1318,6 +1319,7 @@ func createExporters(dsn []string, exporterSeed ...int) {
 		}
 		// This is need for differing exporters
 		constExporterLabels := fmt.Sprintf("exporter=%d", i+seed)
+        log.Debugln("Runned exporter %d for %s", constExporterLabels, currDsn)
 		if len(*constantLabelsList) > 0 {
 			constExporterLabels = *constantLabelsList + "," + constExporterLabels
 		}
@@ -1338,6 +1340,7 @@ func autoCreateExporters() {
 		var dsnToAdd []string
 		for _, currDsn := range dsn {
 			if !dsnList[currDsn] {
+                log.Debugln("Founded dsn: ", currDsn)
 				dsnToAdd = append(dsnToAdd, currDsn)
 				dsnList[currDsn] = true
 			}

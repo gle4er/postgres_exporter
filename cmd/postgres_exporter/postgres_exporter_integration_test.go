@@ -124,6 +124,7 @@ func (s *IntegrationSuite) TestUnknownMetricParsingDoesntCrash(c *C) {
 	exporter.scrape(ch)
 }
 
+// TestDiscoveringDB tests discoveryDB func for autodetecting all databases 
 func (s *IntegrationSuite) TestDiscoveringDB(c *C) {
 	dsn := os.Getenv("DATA_SOURCE_NAME")
 	c.Assert(dsn, Not(Equals), "")
