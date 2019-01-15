@@ -390,7 +390,7 @@ func makeQueryOverrideMap(pgVersion semver.Version, queryOverrides map[string][]
 // TODO: test code for all cu.
 // TODO: use proper struct type system
 // TODO: the YAML this supports is "non-standard" - we should move away from it.
-func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string]MetricMapNamespace, queryOverrideMap map[string]string, constLabels prometheus.Labels) error {
+func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string]MetricMapNamespace, queryOverrideMap map[string]string, constLabels prometheus.Labels, dsn string) error {
 	var extra map[string]interface{}
 
 	err := yaml.Unmarshal(content, &extra)
@@ -401,6 +401,9 @@ func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string
 	// Stores the loaded map representation
 	metricMaps := make(map[string]map[string]ColumnMapping)
 	newQueryOverrides := make(map[string]string)
+    databaseQueries := make(map[string]bool)
+
+    dbName := dsn[(strings.LastIndex(dsn, "/") + 1):]
 
 	for metric, specs := range extra {
 		log.Debugln("New user metric namespace from YAML:", metric)
@@ -409,6 +412,20 @@ func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string
 			case "query":
 				query := value.(string)
 				newQueryOverrides[metric] = query
+
+            case "databases":
+                str := strings.Replace(value.(string), " ", "", -1)
+                databases := strings.Split(str, ",")
+                inList := false
+                log.Debugln("List", databases, "have", dbName)
+                for _, database := range databases {
+                    if strings.Contains(dbName, database) {
+                        log.Debugln("Adding custom query for", database)
+                        inList = true
+                        break
+                    }
+                }
+                databaseQueries[metric] = inList
 
 			case "metrics":
 				for _, c := range value.([]interface{}) {
@@ -458,6 +475,12 @@ func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string
 
 	// Merge the two maps (which are now quite flatteend)
 	for k, v := range partialExporterMap {
+        value, check := databaseQueries[k]
+        if check {
+            if !value {
+                continue
+            }
+        }
 		_, found := exporterMap[k]
 		if found {
 			log.Debugln("Overriding metric", k, "from user YAML file.")
@@ -469,13 +492,19 @@ func addQueries(content []byte, pgVersion semver.Version, exporterMap map[string
 
 	// Merge the query override map
 	for k, v := range newQueryOverrides {
-		_, found := queryOverrideMap[k]
-		if found {
-			log.Debugln("Overriding query override", k, "from user YAML file.")
-		} else {
-			log.Debugln("Adding new query override", k, "from user YAML file.")
-		}
-		queryOverrideMap[k] = v
+        value, check := databaseQueries[k]
+        if check {
+            if !value {
+                continue
+            }
+        }
+        _, found := queryOverrideMap[k]
+        if found {
+            log.Debugln("Overriding query override", k, "from user YAML file.")
+        } else {
+            log.Debugln("Adding new query override", k, "from user YAML file.")
+        }
+        queryOverrideMap[k] = v
 	}
 
 	return nil
@@ -994,7 +1023,7 @@ func (e *Exporter) checkMapVersions(ch chan<- prometheus.Metric, db *sql.DB) err
 			} else {
 				hashsumStr := fmt.Sprintf("%x", sha256.Sum256(userQueriesData))
 
-				if err := addQueries(userQueriesData, semanticVersion, e.metricMap, e.queryOverrides, e.constLabels); err != nil {
+				if err := addQueries(userQueriesData, semanticVersion, e.metricMap, e.queryOverrides, e.constLabels, e.dsn); err != nil {
 					log.Errorln("Failed to reload user queries:", e.userQueriesPath, err)
 					e.userQueriesError.WithLabelValues(e.userQueriesPath, hashsumStr).Set(1)
 				} else {
@@ -1319,7 +1348,7 @@ func createExporters(dsn []string, exporterSeed ...int) {
 		}
 		// This is need for differing exporters
 		constExporterLabels := fmt.Sprintf("exporter=%d", i+seed)
-        log.Debugln("Runned exporter %d for %s", constExporterLabels, currDsn)
+        log.Debugln("Runned exporter", constExporterLabels, "for", currDsn)
 		if len(*constantLabelsList) > 0 {
 			constExporterLabels = *constantLabelsList + "," + constExporterLabels
 		}
